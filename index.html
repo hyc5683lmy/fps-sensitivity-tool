@@ -124,7 +124,10 @@
   .test-modes button.active{background:rgba(249,115,22,.12);border-color:var(--accent2);color:var(--accent2);font-weight:700}
   .test-desc{font-size:.82rem;color:var(--muted);background:var(--bg3);border-radius:8px;padding:.7rem .9rem;margin-bottom:1rem;line-height:1.6}
   .test-area{position:relative;background:var(--bg);border:1px solid var(--rule);border-radius:10px;overflow:hidden}
-  #test-canvas{display:block;width:100%;height:auto;cursor:crosshair}
+  #test-canvas{display:block;width:100%;height:auto;cursor:none}
+  .ptrlock-warn{display:none;background:rgba(248,113,113,.1);border:1px solid rgba(248,113,113,.35);border-radius:8px;padding:.6rem .9rem;margin-bottom:.8rem;font-size:.82rem;color:var(--bad)}
+  .ptrlock-warn.show{display:block}
+  .adjust-info{font-size:.76rem;color:var(--accent);font-family:var(--font-mono);margin-top:.4rem;padding:.3rem .6rem;background:rgba(56,189,248,.06);border-radius:6px}
   .test-overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(11,16,32,.85);backdrop-filter:blur(4px)}
   .test-overlay.hide{display:none}
   .test-overlay h3{font-size:1.1rem;margin-bottom:.5rem;color:var(--accent2)}
@@ -356,6 +359,8 @@
     <div class="test-desc" id="testDesc">
       <b>甩枪点靶</b>：屏幕上会随机出现目标，请尽快移动鼠标到目标上并点击。共 10 轮，系统记录你的反应时间、命中率和偏差方向（过冲/欠冲）。
     </div>
+
+    <div class="ptrlock-warn" id="ptrlockWarn">⚠ 鼠标锁定失败，测试将使用降级模式（灵敏度系数仍会生效）。建议使用 Chrome 或 Edge 浏览器，并确保页面通过 http:// 或 file:// 方式打开。</div>
 
     <div class="test-area" id="testArea">
       <canvas id="test-canvas" width="720" height="400"></canvas>
@@ -688,6 +693,9 @@
   var crosshair={x:CW/2,y:CH/2};
   var sensCoeff={h:1,v:1};
   var pointerLocked=false;
+  var adjustMagnitude=null; // null=待计算，首次测试后根据数据动态计算（5%~15%），之后每次应用减半
+  var isApplyingSuggestion=false; // 标记是否正在通过按钮应用建议值
+  var elPtrlockWarn=document.getElementById('ptrlockWarn');
 
   var elModes=document.getElementById('testModes');
   var elDesc=document.getElementById('testDesc');
@@ -737,20 +745,15 @@
   // Pointer Lock 失败时的降级处理
   document.addEventListener('pointerlockerror',function(){
     pointerLocked=false;
+    if(elPtrlockWarn) elPtrlockWarn.classList.add('show');
   });
 
   canvas.addEventListener('mousemove',function(e){
     if(testState!=='running') return;
-    if(pointerLocked){
-      // Pointer Lock 模式：用 movementX/Y × 灵敏度系数
-      crosshair.x+=e.movementX*sensCoeff.h;
-      crosshair.y+=e.movementY*sensCoeff.v;
-    } else {
-      // 降级模式：直接用鼠标坐标（不模拟游戏灵敏度）
-      var rect=canvas.getBoundingClientRect();
-      crosshair.x=(e.clientX-rect.left)*(CW/rect.width);
-      crosshair.y=(e.clientY-rect.top)*(CH/rect.height);
-    }
+    // 统一使用 movementX/Y × 灵敏度系数（Pointer Lock 和降级模式均适用）
+    // 这样修改灵敏度后，测试中的鼠标移动手感会立即反映变化
+    crosshair.x+=e.movementX*sensCoeff.h;
+    crosshair.y+=e.movementY*sensCoeff.v;
     // 限制在 Canvas 范围内
     crosshair.x=Math.max(0,Math.min(CW,crosshair.x));
     crosshair.y=Math.max(0,Math.min(CH,crosshair.y));
@@ -763,6 +766,7 @@
     elModes.querySelectorAll('button').forEach(function(b){b.classList.remove('active')});
     btn.classList.add('active');
     testMode=btn.dataset.mode;
+    adjustMagnitude=null; // 切换模式时重置，下次测试后重新根据数据计算
     updateModeDesc();
     resetTest();
   });
@@ -871,21 +875,32 @@
 
   renderHistory();
 
+  // 手动修改灵敏度输入时重置调整幅度（通过按钮应用的不重置）
+  ['dpi','sens-val','sens-delta','sens-h','sens-v'].forEach(function(id){
+    document.getElementById(id).addEventListener('input',function(){
+      if(!isApplyingSuggestion){
+        adjustMagnitude=null; // 手动修改时重置，下次测试后重新根据数据计算
+      }
+      isApplyingSuggestion=false;
+    });
+  });
+
   function updateModeDesc(){
     if(testMode==='flick'){
-      elDesc.innerHTML='<b>甩枪点靶</b>：屏幕上会随机出现目标，请尽快移动鼠标到目标上并点击。共 10 轮，系统记录你的反应时间、命中率和偏差方向（过冲/欠冲）。<br><b>测试使用你上方输入的游戏灵敏度</b>——鼠标锁定后，移动手感和游戏内一致。按 ESC 可退出锁定。';
+      elDesc.innerHTML='<b>甩枪点靶</b>：屏幕上会随机出现目标，请尽快移动鼠标到目标上并点击。共 10 轮，系统记录你的反应时间、命中率和偏差方向（过冲/欠冲）。<br><b>测试使用你上方输入的游戏灵敏度</b>——修改灵敏度后重新测试，鼠标移动手感会立即变化。';
       elOTitle.textContent='甩枪点靶测试';
-      elODesc.textContent='点击开始后鼠标会被锁定，光标消失。用和游戏一样的手感移动鼠标瞄准目标并点击。按 ESC 退出。';
+      elODesc.textContent='点击开始后鼠标光标会隐藏。用和游戏一样的手感移动鼠标瞄准目标并点击。';
     } else {
-      elDesc.innerHTML='<b>跟枪追踪</b>：一个目标会在屏幕上移动，请用鼠标持续跟踪它。持续 15 秒，系统记录你的跟踪精度和偏差方向。<br><b>测试使用你上方输入的游戏灵敏度</b>——鼠标锁定后，移动手感和游戏内一致。按 ESC 可退出锁定。';
+      elDesc.innerHTML='<b>跟枪追踪</b>：一个目标会在屏幕上移动，请用鼠标持续跟踪它。持续 15 秒，系统记录你的跟踪精度和偏差方向。<br><b>测试使用你上方输入的游戏灵敏度</b>——修改灵敏度后重新测试，鼠标移动手感会立即变化。';
       elOTitle.textContent='跟枪追踪测试';
-      elODesc.textContent='点击开始后鼠标会被锁定，光标消失。用和游戏一样的手感持续跟踪目标。按 ESC 退出。';
+      elODesc.textContent='点击开始后鼠标光标会隐藏。用和游戏一样的手感持续跟踪目标。';
     }
   }
 
   function resetTest(){
     testState='idle';
     if(pointerLocked) document.exitPointerLock();
+    if(elPtrlockWarn) elPtrlockWarn.classList.remove('show');
     elOverlay.classList.remove('hide');
     elLive.style.display='none';
     elStats.style.display='none';
@@ -914,6 +929,14 @@
   });
 
   // ========== 灵敏度建议值计算 ==========
+  // 根据测试数据动态计算初始调整幅度（5%~15%）
+  // directionRatio: 方向一致性 0.5~1（偏差方向越集中越接近1）
+  // distFactor: 偏差严重度 0~1（平均偏差越大越接近1）
+  function calcInitialMagnitude(directionRatio, distFactor){
+    var severity=directionRatio*distFactor; // 综合严重度 0~1
+    return 0.05+severity*0.10; // 5%~15%
+  }
+
   // adjustPct: 负=降低灵敏度（过冲），正=提高灵敏度（欠冲）
   function buildSuggestion(adjustPct){
     if(Math.abs(adjustPct)<0.001){
@@ -939,6 +962,7 @@
       html+='水平 cm/360：'+cmH_old.toFixed(1)+'cm → '+cmH_new.toFixed(1)+'cm<br>';
       html+='垂直 cm/360：'+cmV_old.toFixed(1)+'cm → '+cmV_new.toFixed(1)+'cm';
       html+='<span class="val-note">DPI 保持 '+dpi+' 不变，水平/垂直倍率不变（'+sensH.toFixed(2)+' / '+sensV.toFixed(2)+'）</span>';
+      html+='<div class="adjust-info">本次调整幅度：'+(adjustMagnitude*100).toFixed(1)+'% ｜ 应用后重测，下次幅度：'+(adjustMagnitude/2*100).toFixed(1)+'%</div>';
       applyData={game:'delta',sensDelta:newBase};
     } else {
       var sens=parseFloat(document.getElementById('sens-val').value)||0.4;
@@ -949,6 +973,7 @@
       html='建议将<b>游戏内灵敏度</b>从 <span class="val-old">'+sens.toFixed(3)+'</span> → <span class="val-new">'+newSens.toFixed(3)+'</span>（'+sign+(adjustPct*100).toFixed(0)+'%）<br>';
       html+='cm/360：'+cm_old.toFixed(1)+'cm → '+cm_new.toFixed(1)+'cm';
       html+='<span class="val-note">DPI 保持 '+dpi+' 不变</span>';
+      html+='<div class="adjust-info">本次调整幅度：'+(adjustMagnitude*100).toFixed(1)+'% ｜ 应用后重测，下次幅度：'+(adjustMagnitude/2*100).toFixed(1)+'%</div>';
       applyData={game:'valorant',sensVal:newSens};
     }
     return {text:html,hasChange:true,applyData:applyData};
@@ -962,6 +987,7 @@
       var btn=document.getElementById('btnApply');
       if(btn){
         btn.addEventListener('click',function(){
+          isApplyingSuggestion=true;
           if(sug.applyData.game==='delta'){
             document.getElementById('sens-delta').value=sug.applyData.sensDelta.toFixed(2);
             document.getElementById('sens-delta').dispatchEvent(new Event('input'));
@@ -969,7 +995,9 @@
             document.getElementById('sens-val').value=sug.applyData.sensVal.toFixed(3);
             document.getElementById('sens-val').dispatchEvent(new Event('input'));
           }
-          el.innerHTML=prefixText+'<br>'+sug.text+'<span class="applied">✓ 已应用，请到游戏设置中修改对应数值</span>';
+          adjustMagnitude=adjustMagnitude/2; // 下次建议幅度减半
+          var nextPct=(adjustMagnitude*100).toFixed(1);
+          el.innerHTML=prefixText+'<br>'+sug.text+'<span class="applied">✓ 已应用，请到游戏设置中修改对应数值</span><span class="val-note">下次重新测试的建议幅度将减半至 '+nextPct+'%</span>';
         });
       }
     } else {
@@ -1150,18 +1178,30 @@
     document.getElementById('statScore').textContent=score;
     elStats.style.display='grid';
 
-    var analysis='',suggestion='',adjustPct=0;
+    var analysis='',suggestion='',adjustPct=0,direction='balanced';
     if(over>under && over>=3){
-      var ratio=over/(under+1);
-      adjustPct = ratio>=3 ? -0.10 : ratio>=2 ? -0.08 : -0.05;
+      direction='overshoot';
+      if(adjustMagnitude===null){
+        var dirRatio=over/(over+under);
+        var distFactor=Math.min(avgDist/80,1);
+        adjustMagnitude=calcInitialMagnitude(dirRatio,distFactor);
+      }
+      adjustPct=-adjustMagnitude;
       analysis='你的甩枪测试中，<b>过冲</b>（超过目标）较多（'+over+'次过冲 vs '+under+'次欠冲）。鼠标经常移动过头，当前灵敏度可能<b>偏高</b>。';
       suggestion='建议尝试<b>降低灵敏度</b>，让甩枪更容易精确停在目标上。调整后可重新测试对比。';
     } else if(under>over && under>=3){
-      var ratio=under/(over+1);
-      adjustPct = ratio>=3 ? 0.10 : ratio>=2 ? 0.08 : 0.05;
+      direction='undershoot';
+      if(adjustMagnitude===null){
+        var dirRatio=under/(over+under);
+        var distFactor=Math.min(avgDist/80,1);
+        adjustMagnitude=calcInitialMagnitude(dirRatio,distFactor);
+      }
+      adjustPct=adjustMagnitude;
       analysis='你的甩枪测试中，<b>欠冲</b>（未到目标）较多（'+under+'次欠冲 vs '+over+'次过冲）。鼠标经常移动不够，当前灵敏度可能<b>偏低</b>。';
       suggestion='建议尝试<b>提高灵敏度</b>，让甩枪更容易到达目标。调整后可重新测试对比。';
     } else {
+      direction='balanced';
+      adjustPct=0;
       analysis='过冲与欠冲次数接近，当前灵敏度<b>基本匹配</b>你的肌肉记忆。命中率 '+hitRate.toFixed(0)+'%，平均耗时 '+(avgTime/1000).toFixed(2)+'s。';
       if(hitRate>=80){
         suggestion='当前灵敏度表现良好，可保持。建议再做跟枪追踪测试，综合判断是否需要微调。';
@@ -1172,6 +1212,7 @@
     document.getElementById('testAnalysis').innerHTML=analysis;
     showSuggestion(suggestion,buildSuggestion(adjustPct));
     elResult.classList.add('show');
+    saveTestResult('flick',score,hitRate,avgDist,direction);
 
     elOverlay.classList.remove('hide');
     elOTitle.textContent='甩枪测试完成';
@@ -1279,18 +1320,30 @@
     document.getElementById('statScore').textContent=score;
     elStats.style.display='grid';
 
-    var analysis='',suggestion='',adjustPct=0;
+    var analysis='',suggestion='',adjustPct=0,direction='balanced';
     if(lead>lag*1.5){
-      var ratio=lead/(lag+1);
-      adjustPct = ratio>=3 ? -0.08 : -0.05;
+      direction='overshoot';
+      if(adjustMagnitude===null){
+        var dirRatio=lead/(lead+lag);
+        var distFactor=Math.min(avgDist/60,1);
+        adjustMagnitude=calcInitialMagnitude(dirRatio,distFactor);
+      }
+      adjustPct=-adjustMagnitude;
       analysis='跟枪追踪中，你的鼠标经常<b>跑在目标前方</b>（超前 '+lead+' 帧 vs 滞后 '+lag+' 帧）。灵敏度可能<b>偏高</b>，鼠标移动比目标快，容易甩过头。';
       suggestion='建议尝试<b>降低灵敏度</b>，让跟枪更稳定，减少超前偏差。';
     } else if(lag>lead*1.5){
-      var ratio=lag/(lead+1);
-      adjustPct = ratio>=3 ? 0.08 : 0.05;
+      direction='undershoot';
+      if(adjustMagnitude===null){
+        var dirRatio=lag/(lead+lag);
+        var distFactor=Math.min(avgDist/60,1);
+        adjustMagnitude=calcInitialMagnitude(dirRatio,distFactor);
+      }
+      adjustPct=adjustMagnitude;
       analysis='跟枪追踪中，你的鼠标经常<b>落在目标后方</b>（滞后 '+lag+' 帧 vs 超前 '+lead+' 帧）。灵敏度可能<b>偏低</b>，鼠标跟不上目标移动。';
       suggestion='建议尝试<b>提高灵敏度</b>，让跟枪更容易跟上目标。';
     } else {
+      direction='balanced';
+      adjustPct=0;
       analysis='鼠标与目标的相对位置均匀，跟踪精度 '+accuracy.toFixed(0)+'%，平均偏差 '+avgDist.toFixed(0)+'px。';
       if(accuracy>=60){
         suggestion='当前灵敏度跟枪表现良好，可保持。结合甩枪测试结果综合判断。';
@@ -1301,6 +1354,7 @@
     document.getElementById('testAnalysis').innerHTML=analysis;
     showSuggestion(suggestion,buildSuggestion(adjustPct));
     elResult.classList.add('show');
+    saveTestResult('tracking',score,accuracy,avgDist,direction);
 
     elOverlay.classList.remove('hide');
     elOTitle.textContent='跟枪测试完成';
